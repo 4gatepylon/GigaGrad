@@ -141,11 +141,8 @@ class MatrixAffine(Parameter):
         self.output_value = lambda: self.matrix + [self.affine]
     
 class MatrixAffineMultiply(Function):
-    def __init__(self, parameter: MatrixAffine, input: Parameter, users: list[Parameter]) -> None:
-        super().__init__()
-        self.parameter = parameter
-        self.input = input
-        self.users = users
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
     def __calc_forward(self, input: Matrix, param_value: Optional[Matrix] = None) -> Matrix:
         # Must have a matrix and a vector (affine) parameter
         assert param_value
@@ -181,3 +178,18 @@ class MatrixAffineMultiply(Function):
             return out
         
         return broadcast_add(matmul(matrix, input), affine)
+
+if __name__ == "__main__":
+    matmul_seq = [
+        # Height, width for each
+        # 1st reduce from 28x28 to 4x28
+        (MatrixAffineMultiply(), MatrixAffine(4, 28)),
+        # 2nd reduce from 4x28 to 1x28
+        (MatrixAffineMultiply(), MatrixAffine(1, 4)),
+    ]
+    # TODO not having transposes (or generally left vs. right mult.) is a real problem
+    
+    matmul_graph = LossGraph(matmul_seq)
+    input = [[random() for _ in range(28)] for _ in range(28)]
+    output = matmul_graph.forward(input)
+    print(output)
