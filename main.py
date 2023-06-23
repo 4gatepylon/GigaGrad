@@ -7,15 +7,159 @@ from uuid import uuid4
 from random import random
 
 # NOTE we only support matrices for now, only linked-list computational graphs
-Matrix = List[List[float]]
+class Matrix:
+    """Simple matrix operations library that enables you to do the following operations:
+        - Addition
+        - Pointwise Multiplication
+        - Transpose
+        - Matrix Multiplication
 
-class NodeState(Enum):
+    It provides
+        - Simple checking via assertions (for sizes to match)
+        - Broadcasting
+        - A simple interface
+
+    It does not provide tensor or higher dimensional operations.
+
+    # NOTE that this library is meant, purely, to enable us to calculate values.
+    """
+    ZERO_INITIALIZER = lambda: 0.0
+    RANDOM_INITIALIZER = lambda: random()
+    def __init__(self, height: int, width: int, values: Optional[list[list[float]]] = False, initializer: Optional[Callable[[], float]] = ZERO_INITIALIZER) -> None:
+        self.height = height
+        self.width = width
+
+        initializer = initializer if initializer else Matrix.ZERO_INITIALIZER
+        self.values = values if values else [[initializer() for _ in range(width)] for _ in range(height)]
+
+        assert len(self.values) == height
+        assert all([len(self.values[i]) == width for i in range(height)])
+    
+    def lmatmul(self, other: Matrix) -> Matrix:
+        # Our matrix is left
+        return Matrix.matmul(self, other)
+    def rmatmul(self, other: Matrix) -> Matrix:
+        # Our matrix is right
+        return Matrix.matmul(other, self)
+    def plus(self, other: Matrix) -> Matrix:
+        # Order does not matter
+        return Matrix.add(self, other)
+    def transpose(self) -> Matrix:
+        # Swap the i and j indices
+        return Matrix(
+            self.width,
+            self.height, 
+            [[self.values[j][i] for j in range(self.height)] for i in range(self.width)]
+        )
+    
+    @staticmethod
+    def matmul(left: Matrix, right: Matrix) -> Matrix:
+        assert left.width == right.height
+        # Multiply two matrices using meaningful multiplication
+
+        dot_dim = left.width
+        out = [[0.0 for _ in range(right.width)] for _ in range(left.height)]
+        for orow in range(left.height):
+            for ocol in range(right.width):
+                for dentry in range(dot_dim):
+                    left_row = lambda j: left.values[orow][j]
+                    right_col = lambda i: right.values[i][ocol]
+                    out[orow][ocol] += left_row(dentry) * right_col(dentry)
+        return out
+    
+    @staticmethod
+    def add(left: Matrix, right: Matrix) -> Matrix:
+        return Matrix.preduce(left, right, lambda a, b: a + b)
+    @staticmethod
+    def pmult(left: Matrix, right: Matrix) -> Matrix:
+        return Matrix.preduce(left, right, lambda a, b: a * b)
+
+    @staticmethod
+    def preduce(left: Matrix, right: Matrix, pop: Callable[[float, float], float], allow_broadcast: bool = True) -> Matrix:
+        # Pointwise reducer for two matrices (i.e. pointwise multiply or add or average or...)
+        # Allows broadcasting
+
+        allowed_rshapes = [] # Declare so non-local to for scope (enables assertion later)
+        for _ in range(2):
+            lh, lw = left.height, left.width
+            lshape = (lh, lw)
+            rshape = (right.height, right.width)
+
+            # Right must match left, right will be reduced onto left (left is template shape)
+            allowed_rshapes = [lshape]
+            if allow_broadcast:
+                allowed_rshapes.append((1, lw))
+                allowed_rshapes.append((lh, 1))
+                allowed_rshapes.append((1, 1))
+            if rshape not in allowed_rshapes:
+                left, right = right, left
+            else:
+                break
+        assert rshape in allowed_rshapes, f'{rshape} not in {allowed_rshapes}'
+
+        # Left is template
+        height = left.height
+        width = left.width
+        out = [[0.0 for _ in range(width)] for _ in range(height)]
+
+        def get_right_value(i: int, j: int) -> float:
+            if rshape == (1, 1):
+                return right.values[0][0]
+            elif rshape == (1, width):
+                return right.values[0][j]
+            elif rshape == (height, 1):
+                return right.values[i][0]
+            elif rshape == (height, width):
+                return right.values[i][j]
+            else:
+                raise ValueError(f'Invalid rshape {rshape} when multiplying, are you sure you checked?')
+
+        for i in range(height):
+            for j in range(width):
+                out[i][j] = pop(left.values[i][j], get_right_value(i, j))
+        return out
+
+
+class CGNodeState(Enum):
+    """A CGNodeState stores the state of a node during its computational graph gradient descent
+    backprop. (etc). NOTE: CG means Computational Graph, generally.
+    - Forward flowing is meant to coordinate propagation of output values.
+    - Backward flowing is meant to coordinate propagation of derivatives w.r.t. the loss.
+
+    Every node will
+    1. Start out empty, nothing is happening
+    2. Enter a state in which its predecessors are flowing forward (i.e. at least one predecessor has reached
+        the FORWARD_FLOWED state but not all).
+    3. Only once ALL predecessors have reached the FORWARD_FLOWED state will the node itself reach the
+        FORWARD_FLOWED state. At this point all the outputs of its predecessors are known and ready to be used.
+        This means that in this state it can calculate the output value of this node.
+    4. Once the node has calculated its output value, it will stay in FORWARD_FLOWED until at least one of
+        its successors is BACKWARD_FLOWED. Then it will enter the SUCCESSORS_BACKWARD_FLOWING state until
+        all of its successors are BACKWARD_FLOWED.
+    5. Once all of its successors are BACKWARD_FLOWED, it will enter the BACKWARD_FLOWED state. At this point
+        the gradient with respect to any parameters this node may use can be calculated. Moreover, the gradient
+        w.r.t. the output of this node and each of the inputs to this node can be handed off to the predecessors.
+    6. Once all of the predecessors are BACKWARD_FLOWED, the node will be available to enter the stepped state
+        by calling a step function. The step function just updates the parameters of the node using the gradients.
+    
+    NOTE: all CGNodes are ONLY able to traverse state in the order
+    EMPTY -> PREDECESSORS_FORWARD_FLOWING -> FORWARD_FLOWED -> SUCCESSORS_BACKWARD_FLOWING -> BACKWARD_FLOWED -> STEPPED ->
+        back to EMPTY.
+    """
+
     EMPTY = 0
-    FORWARD_FLOWED = 1
-    BACKWARD_FLOWED = 2
-    STEPPED = 3
+    PREDECESSORS_FORWARD_FLOWING = 1
+    FORWARD_FLOWED = 2
+    SUCCESSORS_BACKWARD_FLOWING = 3
+    BACKWARD_FLOWED = 4
+    STEPPED = 5
 
-class LossGraph:
+# class GradientLib:
+#     @staticmethod
+#     def MSE():
+#         pass
+
+class LossCG:
     def __init__(self, l: List[Tuple[Function, Optional[Parameter]]]) -> None:
         self.funcs = []
         self.params = []
@@ -37,15 +181,15 @@ class LossGraph:
     
     def clear(self) -> None:
         for func in self.funcs:
-            func.state = NodeState.EMPTY
+            func.state = CGNodeState.EMPTY
             func.derivative_wrt_loss = None
         for param in self.params:
-            param.state = NodeState.EMPTY
+            param.state = CGNodeState.EMPTY
             param.derivative_wrt_loss = None
 
-class Node(ABC):
+class CGNode(ABC):
     def __init__(self) -> None:
-        self.state = NodeState.EMPTY
+        self.state = CGNodeState.EMPTY
         self.id = uuid4()
         self.derivative_wrt_loss: Matrix = None
         self.output_value: Callable[[], Matrix] = lambda: None
@@ -57,7 +201,7 @@ class Node(ABC):
     def step(self) -> None:
         raise NotImplementedError
 
-class Parameter(Node):
+class Parameter(CGNode):
     def __init__(self, function: Optional[Function] = None) -> None:
         super().__init__()
         # self.state, self.id, self.derivative_wrt_loss
@@ -154,49 +298,9 @@ class MatrixAffineMultiply(Function):
         # Turn it into an affine column
         affine = [[affine_row[0][i]] for i in range(len(affine_row[0]))]
 
-        # The affine must be the height of the matrix
-        assert len(matrix) == len(affine), f'{len(matrix)} {len(affine)}'
-
-        def matmul(left: Matrix, right: Matrix) -> Matrix:
-            left_height = len(left)
-            left_width = len(left[0])
-            right_height = len(right)
-            right_width = len(right[0])
-
-            assert left_width == right_height
-            
-
-            out = [[0.0 for _ in range(right_width)] for _ in range(left_height)]
-            for i in range(left_height):
-                for j in range(right_width):
-                    # Calculate dot product of row i and column j
-                    for k in range(left_width):
-                        # Row varies in row dimension, column varies in column dimension
-                        out[i][j] += left[i][k] * right[k][j]
-            return out
-
-        def broadcast_add(left: Matrix, right: Matrix) -> Matrix:
-            left_height = len(left)
-            left_width = len(left[0])
-            right_height = len(right)
-            right_width = len(right[0])
-
-            assert left_height == right_height
-            assert left_width == 1
-            assert right_width >= 1
-
-            out = [[right[i][j] for j in range(right_width)] for i in range(right_height)]
-
-            # Must have same height
-            for i in range(right_height):
-                for j in range(right_width):
-                    # Broadcast in the row dimension (i.e. height-match)
-                    out[i][j] += left[i][0]
-            
-            return out
-        
-        mmed =  matmul(matrix, input)
-        aed = broadcast_add(affine, mmed)
+        # Adding enables broadcasting
+        mmed =  Matrix.matmul(matrix, input)
+        aed = Matrix.add(affine, mmed)
         out = aed
 
         return out
