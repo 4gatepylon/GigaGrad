@@ -1,13 +1,13 @@
+from __future__ import annotations
+
 from abc import ABC
 from enum import Enum
-from typing import Any, Optional, Callable
+from typing import Any, List, Tuple, Optional, Callable
 from uuid import uuid4
 from random import random
 
-from main import Matrix
-
 # NOTE we only support matrices for now, only linked-list computational graphs
-Matrix = list[list[float]]
+Matrix = List[List[float]]
 
 class NodeState(Enum):
     EMPTY = 0
@@ -16,10 +16,10 @@ class NodeState(Enum):
     STEPPED = 3
 
 class LossGraph:
-    def __init__(self, list[tuple[Function, Optional[Parameter]]]) -> None:
+    def __init__(self, l: List[Tuple[Function, Optional[Parameter]]]) -> None:
         self.funcs = []
         self.params = []
-        for func, param in list:
+        for func, param in l:
             self.funcs.append(func)
             if param is not None:
                 self.params.append(param)
@@ -57,7 +57,6 @@ class Node(ABC):
     def step(self) -> None:
         raise NotImplementedError
 
-Function = Any
 class Parameter(Node):
     def __init__(self, function: Optional[Function] = None) -> None:
         super().__init__()
@@ -94,12 +93,12 @@ class Function(Node):
         self.prev = prev
 
     # Push forward the computation
-    def __calc_forward(self, input: Matrix, param_value: Optional[Matrix] = None) -> Matrix:
+    def _calc_forward(self, input: Matrix, param_value: Optional[Matrix] = None) -> Matrix:
         raise NotImplementedError
     def forward(self, input: Matrix) -> Matrix:
         assert self.state == NodeState.EMPTY
 
-        outgoing = self.__calc_forward(input, self.parameter.output_value() if self.parameter else None)
+        outgoing = self._calc_forward(input, self.parameter.output_value() if self.parameter else None)
         self.state = NodeState.FORWARD_FLOWED
 
         if self.next is None:
@@ -107,17 +106,17 @@ class Function(Node):
         return self.next.forward(outgoing)
     
     # Calculate the derivative w.r.t. the loss for the parameter and for the input
-    def __calc_derivative_param(self, next_derivative: Matrix) -> Matrix:
+    def _calc_derivative_param(self, next_derivative: Matrix) -> Matrix:
         raise NotImplementedError
-    def __calc_derivative_input(self, next_derivative: Matrix) -> Matrix:
+    def _calc_derivative_input(self, next_derivative: Matrix) -> Matrix:
         raise NotImplementedError
     def backward(self, next_derivative: Any = None) -> None:
         assert self.state == NodeState.FORWARD_FLOWED
         assert (next_derivative is None) == (self.next is None)
 
         next_derivative = [[1.0]] if next_derivative is None else next_derivative
-        derivative_wrt_loss_input = self.__calc_derivative_input(next_derivative)
-        derivative_wrt_loss_param = self.__calc_derivative_param(next_derivative)
+        derivative_wrt_loss_input = self._calc_derivative_input(next_derivative)
+        derivative_wrt_loss_param = self._calc_derivative_param(next_derivative)
         self.derivative_wrt_loss = derivative_wrt_loss_input
 
         if self.parameter is not None:
@@ -143,7 +142,7 @@ class MatrixAffine(Parameter):
 class MatrixAffineMultiply(Function):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
-    def __calc_forward(self, input: Matrix, param_value: Optional[Matrix] = None) -> Matrix:
+    def _calc_forward(self, input: Matrix, param_value: Optional[Matrix] = None) -> Matrix:
         # Must have a matrix and a vector (affine) parameter
         assert param_value
         assert len(param_value) >= 2
@@ -153,43 +152,70 @@ class MatrixAffineMultiply(Function):
         assert len(affine_row) == 1
         
         # Turn it into an affine column
-        affine = [[affine_row[i]] for i in range(len(affine_row))]
+        affine = [[affine_row[0][i]] for i in range(len(affine_row[0]))]
 
         # The affine must be the height of the matrix
-        assert len(matrix) == len(affine)
+        assert len(matrix) == len(affine), f'{len(matrix)} {len(affine)}'
 
         def matmul(left: Matrix, right: Matrix) -> Matrix:
-            assert len(left[0]) == len(right)
+            left_height = len(left)
+            left_width = len(left[0])
+            right_height = len(right)
+            right_width = len(right[0])
 
-            out = [[0.0 for _ in range(len(right[0]))] for _ in range(len(left))]
-            for i in range(len(left)):
-                for j in range(right[0]):
-                    for k in range(len(left[0])):
+            assert left_width == right_height
+            
+
+            out = [[0.0 for _ in range(right_width)] for _ in range(left_height)]
+            for i in range(left_height):
+                for j in range(right_width):
+                    # Calculate dot product of row i and column j
+                    for k in range(left_width):
+                        # Row varies in row dimension, column varies in column dimension
                         out[i][j] += left[i][k] * right[k][j]
             return out
+
         def broadcast_add(left: Matrix, right: Matrix) -> Matrix:
-            out = [[0.0 for _ in range(len(left[i]))] for i in range(len(left))]
+            left_height = len(left)
+            left_width = len(left[0])
+            right_height = len(right)
+            right_width = len(right[0])
+
+            assert left_height == right_height
+            assert left_width == 1
+            assert right_width >= 1
+
+            out = [[right[i][j] for j in range(right_width)] for i in range(right_height)]
+
             # Must have same height
-            assert len(left) == len(right)
-            assert all([len(right[i]) == 1 for i in range(len(right))])
-            for i in range(len(left)):
-                for j in range(len(left[i])):
-                    out[i][j] += out[i][0]
+            for i in range(right_height):
+                for j in range(right_width):
+                    # Broadcast in the row dimension (i.e. height-match)
+                    out[i][j] += left[i][0]
+            
             return out
         
-        return broadcast_add(matmul(matrix, input), affine)
+        mmed =  matmul(matrix, input)
+        aed = broadcast_add(affine, mmed)
+        out = aed
+
+        return out
 
 if __name__ == "__main__":
     matmul_seq = [
         # Height, width for each
-        # 1st reduce from 28x28 to 4x28
-        (MatrixAffineMultiply(), MatrixAffine(4, 28)),
+        # Cancelled: 1st reduce from 28x28 to 4x28
+        # (MatrixAffineMultiply(), MatrixAffine(4, 28)),
         # 2nd reduce from 4x28 to 1x28
-        (MatrixAffineMultiply(), MatrixAffine(1, 4)),
+        (MatrixAffineMultiply(), MatrixAffine(1, 28)),
     ]
     # TODO not having transposes (or generally left vs. right mult.) is a real problem
-    
+
     matmul_graph = LossGraph(matmul_seq)
     input = [[random() for _ in range(28)] for _ in range(28)]
+    print("---image---")
+    print(input)
+    print("-----------")
+
     output = matmul_graph.forward(input)
     print(output)
