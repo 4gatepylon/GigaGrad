@@ -25,15 +25,27 @@ class Matrix:
     """
     ZERO_INITIALIZER = lambda: 0.0
     RANDOM_INITIALIZER = lambda: random()
-    def __init__(self, height: int, width: int, values: Optional[list[list[float]]] = False, initializer: Optional[Callable[[], float]] = ZERO_INITIALIZER) -> None:
-        self.height = height
-        self.width = width
+    def __init__(self, height: int = None, width: int = None, values: Optional[list[list[float]]] = None, initializer: Optional[Callable[[], float]] = ZERO_INITIALIZER) -> None:
+        assert (height is not None and width is not None) or (
+            values is not None
+        )
+        assert values is None or (
+            type(values) == list and len(values) >= 1 and type(values[0]) == list and len(values[0]) >= 1 and type(values[0][0]) in {float, int}
+        )
+        assert values is None or (
+            all([len(values[i]) == len(values[0]) for i in range(len(values))])
+        )
+        
+        self.height = height if height is not None else len(values)
+        self.width = width if width is not None else len(values[0])
+        assert self.height is not None and self.width is not None
 
         initializer = initializer if initializer else Matrix.ZERO_INITIALIZER
         self.values = values if values else [[initializer() for _ in range(width)] for _ in range(height)]
-
-        assert len(self.values) == height
-        assert all([len(self.values[i]) == width for i in range(height)])
+        
+        assert self.values is not None
+        assert len(self.values) == self.height
+        assert all([len(self.values[i]) == self.width for i in range(self.height)])
     
     def __eq__(self, __value: object) -> bool:
         return type(__value) == Matrix and (
@@ -51,12 +63,30 @@ class Matrix:
     def plus(self, other: Matrix) -> Matrix:
         # Order does not matter
         return Matrix.add(self, other)
+    def times(self, other: float) -> Matrix:
+        # Use broadcasting
+        other_matrix = Matrix(1, 1, values=[[other]])
+        return Matrix.pmult(self, other_matrix)
+    def neg(self) -> Matrix:
+        return self.times(-1.0)
+    def minus(self, other: Matrix) -> Matrix:
+        return Matrix.add(self, other.neg())
+    def inverted(self) -> Matrix:
+        return Matrix(self.height, self.width, values=[[1.0 / self.values[i][j] for j in range(self.width)] for i in range(self.height)])
+    def divided_by(self, other: Matrix) -> Matrix:
+        return Matrix.pmult(self, other.inverted())
     def transpose(self) -> Matrix:
         # Swap the i and j indices
         return Matrix(
             self.width,
             self.height, 
             [[self.values[j][i] for j in range(self.height)] for i in range(self.width)]
+        )
+    def mask(self, include: Callable[[float, int, int], bool], default_value: float = 0.0) -> Matrix:
+        return Matrix(
+            self.height,
+            self.width,
+            [[self.values[i][j] if include(self.values[i][j], i, j) else default_value for j in range(self.width)] for i in range(self.height)]
         )
     
     @staticmethod
@@ -126,6 +156,41 @@ class Matrix:
                 out[i][j] = pop(left.values[i][j], get_right_value(i, j))
         return Matrix(height, width, values=out)
 
+    @staticmethod
+    def almost_equal(a: Matrix, b: Matrix, rtol: float = 1e-5) -> bool:
+        # Return whether the absolute difference is smaller than this for all pointwise entries
+        assert a.height == b.height and a.width == b.width
+        for i in range(a.height):
+            for j in range(a.width):
+                x = a.values[i][j]
+                y = b.values[i][j]
+                if abs(x - y) > rtol:
+                    return False
+        return True
+
+class GradientLib:
+    """Gradient lib is just a place to house/namespace pure functions that calculate gradient w.r.t.
+    the output of a function for a set of incoming parameters matrices. The gradient outputs are always
+    matrices that have the exact same shape and same order as the incoming parameters.
+
+    - The inputs to every function are the inputs to the computation that was done on the CG.
+    - The outputs of every function are the derivatives of those inputs' corr. variables w.r.t. the loss.
+    """
+    def MSE(left: Matrix, right: Matrix) -> tuple[Matrix, Matrix]:
+        ldiff = left.minus(right).times(2.0)
+        rdiff = right.minus(left).times(2.0)
+        return ldiff, rdiff
+    def KL(left: Matrix, right: Matrix) -> tuple[Matrix, Matrix]:
+        # KL = sum(left * log(left / right))
+        pass
+    def Matmult(left: Matrix, right: Matrix) -> tuple[Matrix, Matrix]:
+        pass
+    def MatAdd(left: Matrix, right: Matrix) -> tuple[Matrix, Matrix]:
+        pass
+    def MatPmult(left: Matrix, right: Matrix) -> tuple[Matrix, Matrix]:
+        pass
+    def ReLU(m: Matrix) -> tuple[Matrix, Matrix]:
+        return m.mask(lambda v, _, __: v >= 0.0, default_value=0.0)
 
 class CGNodeState(Enum):
     """A CGNodeState stores the state of a node during its computational graph gradient descent
@@ -312,13 +377,16 @@ class CGNodeState(Enum):
 
 #         return out
 
-if __name__ == "__main__":
-    """ Begin by testing our matrix code """
 
-    mat1 = Matrix(2, 3, values=[[1, 2, 3], [4, 5, 6]])
-    mat2 = Matrix(3, 2, values=[[1, 0], [1, 0], [1, 0]])
-    mat1a = Matrix(2, 3, values=[[1, 1, 1], [1, 1, 1]])
-    matb = Matrix(1, 3, values=[[1, 1, 1]])
+def TEST_MAT_LIB() -> None:
+    # Check that you can make matrices with width and height
+    Matrix(height=2, width=2)
+
+    # Check that you can make matrices with values
+    mat1 = Matrix(values=[[1, 2, 3], [4, 5, 6]])
+    mat2 = Matrix(values=[[1, 0], [1, 0], [1, 0]])
+    mat1a = Matrix(values=[[1, 1, 1], [1, 1, 1]])
+    matb = Matrix(values=[[1, 1, 1]])
 
     # Check that matmul works
     assert Matrix.matmul(mat1, mat2).values == [[6, 0], [15, 0]]
@@ -336,6 +404,24 @@ if __name__ == "__main__":
     assert Matrix.pmult(mat1, matb).values == [[1, 2, 3], [4, 5, 6]] and Matrix.pmult(matb, mat1) == Matrix.pmult(mat1, matb)
     assert Matrix.add(mat2, matb.transpose()).values == [[2, 1], [2, 1], [2, 1]] and Matrix.add(matb.transpose(), mat2) == Matrix.add(mat2, matb.transpose())
     assert Matrix.pmult(mat2, matb.transpose()).values == [[1, 0], [1, 0], [1, 0]] and Matrix.pmult(matb.transpose(), mat2) == Matrix.pmult(mat2, matb.transpose())
+    
+    # Check that other nifty operations work
+    assert mat1a.minus(mat1).values == [[0, -1, -2], [-3, -4, -5]]
+    assert mat1.times(2).values == [[2, 4, 6], [8, 10, 12]]
+    assert mat1.divided_by(Matrix(values=[[0.2]])) == mat1.times(5)
+    assert Matrix.almost_equal(Matrix.inverted(mat1), Matrix(values=[[1.0, 0.5, 1.0/3.0], [0.25, 0.2, 1.0/6.0]]))
+
+def TEST_TRIVIAL_GRADIENT() -> None:
+    pass
+
+if __name__ == "__main__":
+    """ Begin by testing our matrix code """
+    TEST_MAT_LIB()
+    
+    """ Continue to test the propagation of our gradients on a simple example
+        (the gradient value code and the loss graph traversal/topo-sort, etc... code is too
+        simple to be really worth testing here)
+    """
 
     # matmul_seq = [
     #     # Height, width for each
