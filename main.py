@@ -1,3 +1,17 @@
+"""A minimal implementation of a static computational graph to be able to build up neural networks.
+    It does NOT support:
+    - Tensors, only matrices are allowed (and therefore batching isn't really a thing)
+    - Different optimizers, etc...
+    - Loss functions other than MSE
+    - Convolutions, attention, etc... (only FFNN allowed basically)
+    - Special data loaders, etc...
+    - Any optimizations of any kind
+    - Softmax, etc... (only sigmoid)
+    - Computational graphs that are not linkedlists are not really tested...
+
+It is meant to be usable only for binary classifiers and really simply shit that you could run
+on CPU.
+"""
 from __future__ import annotations
 
 from abc import ABC
@@ -5,6 +19,7 @@ from enum import Enum
 from typing import Any, List, Tuple, Optional, Callable
 from uuid import uuid4
 from random import random
+import math
 
 # NOTE we only support matrices for now, only linked-list computational graphs
 class Matrix:
@@ -168,6 +183,31 @@ class Matrix:
                     return False
         return True
 
+class ForwardLib:
+    """ForwardLib is meant to be a trivial house of pure functions that are used to calculate the
+    foward pass for different functions.
+    """
+    def MSE(left: Matrix, right: Matrix) -> Matrix:
+        # NOTE MSE is a bit of a misnomer since we usually average across the
+        # batch, this is just absolute squared error
+        diff = left.minus(right)
+        diff2 = Matrix.pmult(diff, diff)
+        return diff2
+    
+    def Matmult(left: Matrix, right: Matrix) -> tuple[Matrix, Matrix]:
+        return Matrix.matmul(left, right)
+    
+    def MatAdd(left: Matrix, right: Matrix) -> tuple[Matrix, Matrix]:
+        return Matrix.add(left, right)
+    
+    def ReLU(m: Matrix) -> Matrix:
+        return m.mask(lambda v, _, __: v >= 0.0, default_value=0.0)
+    
+    def _singleton_sigmoid(s: float) -> float:
+        return 1.0 / (1.0 + math.exp(-s))
+    def sigmoid(s: Matrix) -> Matrix:
+        return Matrix(values=[[ForwardLib._singleton_sigmoid(s.values[i][j]) for j in range(s.width)] for i in range(s.height)])
+
 class GradientLib:
     """Gradient lib is just a place to house/namespace pure functions that calculate gradient w.r.t.
     the output of a function for a set of incoming parameters matrices. The gradient outputs are always
@@ -180,17 +220,26 @@ class GradientLib:
         ldiff = left.minus(right).times(2.0)
         rdiff = right.minus(left).times(2.0)
         return ldiff, rdiff
-    def KL(left: Matrix, right: Matrix) -> tuple[Matrix, Matrix]:
-        # KL = sum(left * log(left / right))
-        pass
-    def Matmult(left: Matrix, right: Matrix) -> tuple[Matrix, Matrix]:
+    def Matmult(left: Matrix, right: Matrix) -> tuple[Callable[[int, int], float], Callable[[int, int], float]]:
+        # The gradient w.r.t. to each matrix also depends on the element of the output
+        # the goal here is to return a loss 
+        def left_grad(i: int, j: int, s: int, t: int) -> float:
+            pass
         pass
     def MatAdd(left: Matrix, right: Matrix) -> tuple[Matrix, Matrix]:
-        pass
-    def MatPmult(left: Matrix, right: Matrix) -> tuple[Matrix, Matrix]:
-        pass
-    def ReLU(m: Matrix) -> tuple[Matrix, Matrix]:
+        # NOTE this supports broadcasting
+        # When you add the derivative is linear, so its just the value that we passed in here
+        return right, left
+    
+    def ReLU(m: Matrix) -> Matrix:
         return m.mask(lambda v, _, __: v >= 0.0, default_value=0.0)
+    
+    def _singleton_sigmoid_derivative(s: float) -> float:
+        ss = ForwardLib._singleton_sigmoid(s)
+        return ss * (1 - ss)
+    
+    def sigmoid(s: Matrix) -> Matrix:
+        return Matrix(values=[[GradientLib._singleton_sigmoid_derivative(s.values[i][j]) for j in range(s.width)] for i in range(s.height)])
 
 class CGNodeState(Enum):
     """A CGNodeState stores the state of a node during its computational graph gradient descent
@@ -225,11 +274,6 @@ class CGNodeState(Enum):
     SUCCESSORS_BACKWARD_FLOWING = 3
     BACKWARD_FLOWED = 4
     STEPPED = 5
-
-# class GradientLib:
-#     @staticmethod
-#     def MSE():
-#         pass
 
 # class LossCG:
 #     def __init__(self, l: List[Tuple[Function, Optional[Parameter]]]) -> None:
@@ -412,6 +456,9 @@ def TEST_MAT_LIB() -> None:
     assert Matrix.almost_equal(Matrix.inverted(mat1), Matrix(values=[[1.0, 0.5, 1.0/3.0], [0.25, 0.2, 1.0/6.0]]))
 
 def TEST_TRIVIAL_GRADIENT() -> None:
+    pass
+
+def TEST_MNIST_BOOLEAN_CLASSIFIER() -> None:
     pass
 
 if __name__ == "__main__":
